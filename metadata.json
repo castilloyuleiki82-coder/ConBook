@@ -1,0 +1,5 @@
+{
+  "name": "SmartConnect CRM (Static)",
+  "description": "Aplicación de contactos en un solo archivo HTML. Sin compilación, sin dependencias de Node.js.",
+  "requestFramePermissions": []
+}

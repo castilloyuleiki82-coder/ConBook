@@ -1,0 +1,1277 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ConBook</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        slate: { 850: '#151e2e' }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Fuente Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .hidden { display: none !important; }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        
+        /* Pantalla de error */
+        #error-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #fee2e2;
+            color: #991b1b;
+            z-index: 9999;
+            padding: 2rem;
+            overflow: auto;
+        }
+
+        /* Animación Modal */
+        @keyframes bounceIn {
+            0% { opacity: 0; transform: scale(0.95); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+        .animate-bounce-in { animation: bounceIn 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        
+        /* Toast Animation */
+        @keyframes slideInRight {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .toast-enter { animation: slideInRight 0.3s forwards; }
+
+        /* Custom Scrollbar for Dark Mode */
+        .dark ::-webkit-scrollbar { width: 8px; }
+        .dark ::-webkit-scrollbar-track { background: #0f172a; }
+        .dark ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        .dark ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+
+    <!-- POLYFILL CRÍTICO -->
+    <script>
+        // Configuración robusta del entorno
+        window.process = window.process || { env: {} };
+        window.process.env = window.process.env || {};
+        
+        window.onerror = function(msg, url, line, col, error) {
+            const errorBox = document.getElementById('error-overlay');
+            const errorMsg = document.getElementById('error-msg');
+            if (errorBox && errorMsg) {
+                errorBox.style.display = 'block';
+                errorMsg.innerText = `Error Crítico: ${msg}\n\nPosible causa: Bloqueo de red o librería incompatible.\nLínea: ${line}\nArchivo: ${url}`;
+                document.getElementById('initial-loading').style.display = 'none';
+            }
+        };
+    </script>
+</head>
+<body class="bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-900 dark:to-slate-950 text-slate-900 dark:text-slate-100 antialiased transition-colors duration-200 min-h-screen">
+
+    <!-- Pantalla de Carga Inicial -->
+    <div id="initial-loading" class="fixed inset-0 bg-white dark:bg-slate-900 flex flex-col items-center justify-center z-50">
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+        <p id="loading-text" class="text-slate-500 dark:text-slate-400 font-medium">Cargando ConBook...</p>
+        <p id="loading-hint" class="text-xs text-red-500 mt-4 hidden">Parece que tarda mucho. ¿Estás abriendo el archivo localmente sin servidor?</p>
+    </div>
+
+    <!-- Pantalla de Error -->
+    <div id="error-overlay">
+        <h2 class="text-2xl font-bold mb-4">Algo salió mal</h2>
+        <p>Por favor revisa la consola o tu configuración.</p>
+        <pre id="error-msg" class="bg-white p-4 rounded mt-4 border border-red-300 font-mono text-sm whitespace-pre-wrap"></pre>
+        <button onclick="window.location.reload()" class="mt-6 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">Recargar Página</button>
+    </div>
+
+    <!-- Raíz de la App -->
+    <div id="root" class="min-h-screen flex flex-col hidden"></div>
+    
+    <!-- Portal de Modales -->
+    <div id="modal-root"></div>
+
+    <!-- Portal de Notificaciones -->
+    <div id="toast-root" class="fixed bottom-5 right-5 z-[60] flex flex-col gap-3"></div>
+
+    <!-- ========================================== -->
+    <!-- LÓGICA DE LA APLICACIÓN                    -->
+    <!-- ========================================== -->
+    <script type="module">
+        // --- 1. CONFIGURACIÓN Y UTILIDADES ---
+        
+        const ready = () => {
+            const loader = document.getElementById('initial-loading');
+            const root = document.getElementById('root');
+            if (loader) loader.classList.add('hidden');
+            if (root) root.classList.remove('hidden');
+            window.APP_LOADED = true; 
+        };
+
+        const compressImage = (file) => {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        const MAX_WIDTH = 300; 
+                        const scaleSize = MAX_WIDTH / img.width;
+                        canvas.width = MAX_WIDTH;
+                        canvas.height = img.height * scaleSize;
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        resolve(canvas.toDataURL('image/jpeg', 0.7));
+                    };
+                };
+                reader.onerror = (error) => reject(error);
+            });
+        };
+
+        // --- 2. SERVICIOS ---
+
+        const NotificationService = {
+            show: (message, type = 'info') => {
+                const root = document.getElementById('toast-root');
+                const div = document.createElement('div');
+                
+                let colors = 'border-blue-500 text-blue-600';
+                let iconName = 'info';
+                
+                if (type === 'success') { colors = 'border-green-500 text-green-600'; iconName = 'check-circle'; }
+                if (type === 'error') { colors = 'border-red-500 text-red-600'; iconName = 'alert-circle'; }
+                if (type === 'warning') { colors = 'border-yellow-500 text-yellow-600'; iconName = 'alert-triangle'; }
+
+                div.className = `bg-white dark:bg-slate-800 border-l-4 shadow-lg rounded p-4 flex items-center gap-3 w-80 toast-enter ${colors}`;
+                div.innerHTML = `
+                    <i data-lucide="${iconName}" class="w-5 h-5"></i>
+                    <p class="text-sm font-medium text-slate-700 dark:text-slate-200">${message}</p>
+                `;
+                
+                root.appendChild(div);
+                if(window.lucide) window.lucide.createIcons();
+
+                setTimeout(() => {
+                    div.style.opacity = '0';
+                    div.style.transform = 'translateX(100%)';
+                    div.style.transition = 'all 0.3s';
+                    setTimeout(() => div.remove(), 300);
+                }, 3000);
+            }
+        };
+
+        const ThemeService = {
+            init: () => {
+                const theme = localStorage.getItem('cb_theme');
+                if (theme === 'dark' || (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                    document.documentElement.classList.add('dark');
+                } else {
+                    document.documentElement.classList.remove('dark');
+                }
+            },
+            toggle: () => {
+                const isDark = document.documentElement.classList.toggle('dark');
+                localStorage.setItem('cb_theme', isDark ? 'dark' : 'light');
+                return isDark;
+            },
+            isDark: () => document.documentElement.classList.contains('dark')
+        };
+        
+        const BirthdayService = {
+            STORAGE_KEY: 'cb_bd_acks',
+            check: (contacts) => {
+                const today = new Date();
+                const tomorrow = new Date();
+                tomorrow.setDate(today.getDate() + 1);
+
+                const getMonthDay = (dateStr) => {
+                    if(!dateStr) return '';
+                    const parts = dateStr.split('-');
+                    return `${parts[1]}-${parts[2]}`; 
+                };
+
+                const todayStr = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                const tomorrowStr = `${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+                
+                // Get acknowledged birthdays from storage
+                const acks = JSON.parse(localStorage.getItem(BirthdayService.STORAGE_KEY) || '{}');
+                const currentYear = today.getFullYear();
+
+                const upcoming = contacts.filter(c => {
+                    if (!c.birthday || c.isBlocked) return false;
+                    const bDay = getMonthDay(c.birthday);
+                    const isSoon = bDay === todayStr || bDay === tomorrowStr;
+                    
+                    if (!isSoon) return false;
+
+                    // Check if already acknowledged this year
+                    const ackKey = `${currentYear}_${c.id}`;
+                    if (acks[ackKey]) return false;
+
+                    return true;
+                });
+
+                if (upcoming.length > 0) {
+                    BirthdayService.showPopup(upcoming);
+                }
+            },
+            markAsRead: (contactIds) => {
+                const acks = JSON.parse(localStorage.getItem(BirthdayService.STORAGE_KEY) || '{}');
+                const currentYear = new Date().getFullYear();
+                
+                contactIds.forEach(id => {
+                    acks[`${currentYear}_${id}`] = true;
+                });
+                
+                localStorage.setItem(BirthdayService.STORAGE_KEY, JSON.stringify(acks));
+            },
+            showPopup: (contacts) => {
+                const container = document.getElementById('toast-root');
+                // Remove existing popup if any to avoid duplicates (except normal toasts)
+                const existing = container.querySelector('.bd-popup');
+                if(existing) existing.remove();
+
+                const div = document.createElement('div');
+                div.className = "bd-popup bg-white dark:bg-slate-800 border-l-4 border-pink-500 shadow-2xl rounded-r-lg p-4 flex flex-col gap-3 w-80 animate-bounce-in relative";
+                div.innerHTML = `
+                    <div class="flex items-start gap-3">
+                        <div class="text-pink-500"><i data-lucide="cake" class="w-6 h-6"></i></div>
+                        <div class="flex-1">
+                            <h4 class="font-bold text-slate-800 dark:text-white">¡Cumpleaños Cerca!</h4>
+                            <p class="text-sm text-slate-600 dark:text-slate-300 mt-1">
+                                ${contacts.map(c => c.firstName).join(', ')} celebra${contacts.length > 1 ? 'n' : ''} en 24h.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="flex justify-end gap-2 mt-1">
+                        <button id="btn-bd-close" class="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">Cerrar</button>
+                        <button id="btn-bd-ack" class="text-xs bg-pink-100 text-pink-700 px-3 py-1 rounded-full font-medium hover:bg-pink-200 dark:bg-pink-900/50 dark:text-pink-300 dark:hover:bg-pink-900 transition">
+                            Marcar como Leído
+                        </button>
+                    </div>
+                `;
+                container.appendChild(div);
+                if(window.lucide) window.lucide.createIcons();
+
+                div.querySelector('#btn-bd-close').onclick = () => div.remove();
+                div.querySelector('#btn-bd-ack').onclick = () => {
+                    BirthdayService.markAsRead(contacts.map(c => c.id));
+                    div.remove();
+                };
+            }
+        };
+
+        const AuthService = {
+            STORAGE_KEY: 'cb_user_session',
+            login: async (email, password) => {
+                await new Promise(r => setTimeout(r, 800)); 
+                if (email === 'Yulelkis@Castillo.com' && password === '123456') {
+                    const user = { 
+                        id: 'usr_1', 
+                        name: 'Yulelkis Castillo', 
+                        email: 'Yulelkis@Castillo.com', 
+                        avatar: 'https://ui-avatars.com/api/?name=Yulelkis+Castillo&background=db2777&color=fff' 
+                    };
+                    localStorage.setItem(AuthService.STORAGE_KEY, JSON.stringify(user));
+                    return user;
+                }
+                throw new Error('Credenciales inválidas. Usa Yulelkis@Castillo.com / 123456');
+            },
+            logout: () => {
+                localStorage.removeItem(AuthService.STORAGE_KEY);
+            },
+            getSession: () => {
+                try {
+                    const stored = localStorage.getItem(AuthService.STORAGE_KEY);
+                    return stored ? JSON.parse(stored) : null;
+                } catch (e) { return null; }
+            }
+        };
+
+        const ContactService = {
+            STORAGE_KEY: 'cb_contacts_db_v4', // v4 to include blocked list update
+            init: () => {
+                const existing = localStorage.getItem(ContactService.STORAGE_KEY);
+                if (!existing) {
+                    const seed = [
+                        // --- FAMILIA ---
+                        { id: 'rd_1', firstName: 'Altagracia', lastName: 'Pérez', email: 'alta.perez@hotmail.com', phone:'809-555-0101', jobTitle: 'Jubilada', company: 'Familia', category: 'FAMILY', isFavorite: true, favoriteFood: 'Sancocho', birthday: '1955-01-21', children: '3 Hijos', pets: 'Loro (Paco)', createdAt: new Date().toISOString() },
+                        { id: 'rd_5', firstName: 'Tía', lastName: 'Mery', email: 'mery.rosario@gmail.com', phone:'809-555-0505', jobTitle: 'Ama de Casa', company: 'Hogar', category: 'FAMILY', isFavorite: false, favoriteFood: 'Mangú con los 3 golpes', birthday: '1970-11-02', notes: 'Llamar los domingos', createdAt: new Date().toISOString() },
+                        { id: 'rd_12', firstName: 'Prima', lastName: 'Jessica', email: 'jessica.usa@gmail.com', phone:'1-718-555-1212', jobTitle: 'Estudiante', company: 'NYU', category: 'FAMILY', isFavorite: false, favoriteFood: 'Mofongo', createdAt: new Date().toISOString() },
+                        
+                        // --- AMIGOS ---
+                        { id: 'rd_6', firstName: 'Junior', lastName: 'El Menor', email: '', phone:'829-555-0606', jobTitle: 'Motoconcho', company: 'Parada 27', category: 'FRIENDS', isFavorite: false, favoriteFood: 'Espaguetis', notes: 'Hace diligencias rápidas', createdAt: new Date().toISOString() },
+                        { id: 'am_1', firstName: 'Carlos', lastName: 'El Duro', email: 'carlos.gym@gmail.com', phone:'829-555-9988', jobTitle: 'Entrenador', company: 'SmartFit', category: 'FRIENDS', isFavorite: true, favoriteFood: 'Proteína', notes: 'Compañero de Gym', createdAt: new Date().toISOString() },
+                        { id: 'am_2', firstName: 'Yessica', lastName: 'La Vecina', email: '', phone:'809-555-7766', jobTitle: 'Estilista', company: 'Salón', category: 'FRIENDS', isFavorite: false, favoriteFood: 'Café', notes: 'Vive en el 3B', createdAt: new Date().toISOString() },
+                        { id: 'am_3', firstName: 'Luis', lastName: 'Dominó', email: '', phone:'849-555-4433', jobTitle: 'Retirado', company: '', category: 'FRIENDS', isFavorite: false, favoriteFood: 'Cerveza', notes: 'Juega los sábados', createdAt: new Date().toISOString() },
+                        { id: 'am_4', firstName: 'Ana', lastName: 'La Universidad', email: 'ana.uni@uasd.edu.do', phone:'829-555-2211', jobTitle: 'Arquitecta', company: 'Freelance', category: 'FRIENDS', isFavorite: false, favoriteFood: 'Sushi', createdAt: new Date().toISOString() },
+                        { id: 'am_5', firstName: 'Roberto', lastName: 'Béisbol', email: '', phone:'809-555-1122', jobTitle: 'Coach', company: 'Liga', category: 'FRIENDS', isFavorite: false, favoriteFood: 'Empanadas', createdAt: new Date().toISOString() },
+
+                        // --- TRABAJO ---
+                        { id: 'rd_2', firstName: 'Winston', lastName: 'González', email: 'winston.g@callcenter.com', phone:'829-555-0202', jobTitle: 'Agente de Servicio', company: 'Call Center Intl', category: 'WORK', isFavorite: false, favoriteFood: 'Pizza', birthday: '1998-06-15', createdAt: new Date().toISOString() },
+                        { id: 'rd_3', firstName: 'Ing. Carlos', lastName: 'Batista', email: 'ing.batista@constructora.do', phone:'809-555-0303', jobTitle: 'Ingeniero Civil', company: 'Constructora Norte', category: 'WORK', isFavorite: false, favoriteFood: 'Chivo Liniero', createdAt: new Date().toISOString() },
+                        { id: 'wk_1', firstName: 'Lic. Laura', lastName: 'Recursos', email: 'laura.rrhh@empresa.do', phone:'809-555-3344', jobTitle: 'Gerente RRHH', company: 'Oficina Central', category: 'WORK', isFavorite: false, notes: 'Encargada de nómina', createdAt: new Date().toISOString() },
+                        { id: 'wk_2', firstName: 'Miguel', lastName: 'Soporte', email: 'miguel.it@tech.do', phone:'829-555-5566', jobTitle: 'Soporte TI', company: 'Tech Solutions', category: 'WORK', isFavorite: true, notes: 'Arregla las impresoras', createdAt: new Date().toISOString() },
+                        { id: 'wk_3', firstName: 'Sra. Patricia', lastName: 'Jefa', email: 'patricia.boss@corp.com', phone:'809-555-9900', jobTitle: 'Directora', company: 'Corporación', category: 'WORK', isFavorite: false, notes: 'Solo llamadas urgentes', createdAt: new Date().toISOString() },
+                        { id: 'wk_4', firstName: 'Pedro', lastName: 'Contabilidad', email: 'pedro.conta@finanzas.do', phone:'809-555-7788', jobTitle: 'Contador', company: 'Finanzas & Asoc', category: 'WORK', isFavorite: false, createdAt: new Date().toISOString() },
+                        { id: 'wk_5', firstName: 'Vendedor', lastName: 'Seguros', email: 'seguros@universal.do', phone:'809-555-0011', jobTitle: 'Agente', company: 'Seguros Universal', category: 'WORK', isFavorite: false, createdAt: new Date().toISOString() },
+
+                        // --- OTROS ---
+                        { id: 'rd_4', firstName: 'Yudelka', lastName: 'Mateo', email: 'yude.lotto@gmail.com', phone:'849-555-0404', jobTitle: 'Cajera', company: 'Banca La Soñadora', category: 'OTHER', isFavorite: false, favoriteFood: 'Picapollo', createdAt: new Date().toISOString() },
+                        { id: 'rd_7', firstName: 'Dra. Carmen', lastName: 'Rosario', email: 'dra.rosario@clinica.do', phone:'809-555-0707', jobTitle: 'Pediatra', company: 'Centro Médico Real', category: 'OTHER', isFavorite: false, favoriteFood: 'Ensalada Cesar', createdAt: new Date().toISOString() },
+                        { id: 'rd_9', firstName: 'Colmado', lastName: 'Los Muchachos', email: '', phone:'809-555-0909', jobTitle: 'Delivery', company: 'Colmado', category: 'OTHER', isFavorite: true, notes: 'Fian hasta el 15', createdAt: new Date().toISOString() },
+                        { id: 'rd_10', firstName: 'Ashley', lastName: 'La Rubia', email: 'ashley.nails@salon.com', phone:'829-555-1010', jobTitle: 'Manicurista', company: 'Dra. Uñas', category: 'OTHER', isFavorite: false, favoriteFood: 'Sushi', createdAt: new Date().toISOString() },
+                        { id: 'rd_11', firstName: 'José', lastName: 'El Mecánico', email: '', phone:'849-555-1111', jobTitle: 'Mecánico', company: 'Taller José', category: 'OTHER', isFavorite: false, notes: 'Experto en Toyota', createdAt: new Date().toISOString() },
+                        { id: 'rd_13', firstName: 'Don', lastName: 'Gregorio', email: '', phone:'809-555-1313', jobTitle: 'Junta de Vecinos', company: 'Residencial', category: 'OTHER', isFavorite: false, notes: 'Presidente de la junta', createdAt: new Date().toISOString() },
+                        { id: 'rd_15', firstName: 'Manuel', lastName: 'Uber', email: 'manu.driver@uber.com', phone:'829-555-1515', jobTitle: 'Chofer', company: 'Uber', category: 'OTHER', isFavorite: false, notes: 'Carro Sonata Gris', createdAt: new Date().toISOString() },
+                    
+                        // --- BLOQUEADOS (NUEVOS) ---
+                        { id: 'blk_1', firstName: 'Cobrador', lastName: 'Banco', email: 'cobranzas@banco.do', phone:'809-555-6666', jobTitle: 'Agente de Cobros', company: 'Banco', category: 'OTHER', isFavorite: false, notes: 'Llaman a las 7am', isBlocked: true, createdAt: new Date().toISOString() },
+                        { id: 'blk_2', firstName: 'Número', lastName: 'Desconocido', email: '', phone:'829-555-0000', jobTitle: '', company: '', category: 'OTHER', isFavorite: false, notes: 'Llamadas mudas', isBlocked: true, createdAt: new Date().toISOString() },
+                        { id: 'blk_3', firstName: 'Promociones', lastName: 'Ventas', email: 'spam@ofertas.com', phone:'809-555-9999', jobTitle: 'Bot', company: 'Marketing Inc', category: 'OTHER', isFavorite: false, isBlocked: true, createdAt: new Date().toISOString() },
+                    ];
+                    localStorage.setItem(ContactService.STORAGE_KEY, JSON.stringify(seed));
+                }
+            },
+            getAll: async () => {
+                await new Promise(r => setTimeout(r, 400));
+                return JSON.parse(localStorage.getItem(ContactService.STORAGE_KEY) || '[]');
+            },
+            create: async (contact) => {
+                await new Promise(r => setTimeout(r, 500));
+                const contacts = await ContactService.getAll();
+                const newContact = { 
+                    ...contact, 
+                    id: `c_${Date.now()}`, 
+                    category: contact.category || 'OTHER',
+                    isFavorite: contact.isFavorite || false,
+                    createdAt: new Date().toISOString(), 
+                    isBlocked: false 
+                };
+                contacts.unshift(newContact);
+                localStorage.setItem(ContactService.STORAGE_KEY, JSON.stringify(contacts));
+                return newContact;
+            },
+            update: async (contact) => {
+                await new Promise(r => setTimeout(r, 500));
+                let contacts = await ContactService.getAll();
+                const index = contacts.findIndex(c => c.id === contact.id);
+                if (index !== -1) {
+                    contacts[index] = { ...contacts[index], ...contact };
+                    localStorage.setItem(ContactService.STORAGE_KEY, JSON.stringify(contacts));
+                }
+            },
+            toggleBlock: async (id) => {
+                let contacts = await ContactService.getAll();
+                const index = contacts.findIndex(c => c.id === id);
+                if (index !== -1) {
+                    contacts[index].isBlocked = !contacts[index].isBlocked;
+                    localStorage.setItem(ContactService.STORAGE_KEY, JSON.stringify(contacts));
+                    return contacts[index]; // return updated contact
+                }
+            },
+            delete: async (id) => {
+                const contacts = await ContactService.getAll();
+                const filtered = contacts.filter(c => c.id !== id);
+                localStorage.setItem(ContactService.STORAGE_KEY, JSON.stringify(filtered));
+            }
+        };
+
+        // --- 3. UI RENDERING ---
+
+        const State = {
+            user: null,
+            contacts: [],
+            currentView: 'LOGIN',
+            editingContact: null,
+            filter: 'ALL', // 'ALL', 'BLOCKED', 'FAMILY', 'FRIENDS', 'WORK', 'OTHER', 'FAVORITES'
+            viewMode: localStorage.getItem('cb_view_mode') || 'GRID' // 'GRID' or 'LIST'
+        };
+
+        const UI = {
+            root: document.getElementById('root'),
+            modalRoot: document.getElementById('modal-root'),
+            
+            updateIcons: () => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            },
+
+            openModal: (contact) => {
+                UI.modalRoot.innerHTML = UI.Components.ContactModal(contact);
+                UI.updateIcons();
+                
+                const close = () => { UI.modalRoot.innerHTML = ''; };
+                document.getElementById('btn-close-modal').onclick = close;
+                document.getElementById('modal-backdrop').onclick = (e) => {
+                    if (e.target.id === 'modal-backdrop') close();
+                };
+
+                // Block Button Logic (Modal)
+                const btnBlock = document.getElementById('btn-block-contact');
+                if(btnBlock) {
+                    btnBlock.onclick = async () => {
+                        const updated = await ContactService.toggleBlock(contact.id);
+                        const isNowBlocked = updated.isBlocked;
+                        
+                        // Update state locally
+                        const cIndex = State.contacts.findIndex(c => c.id === contact.id);
+                        if(cIndex !== -1) State.contacts[cIndex] = updated;
+
+                        // Notification
+                        if (isNowBlocked) NotificationService.show(`${updated.firstName} ha sido bloqueado`, 'error');
+                        else NotificationService.show(`${updated.firstName} ha sido desbloqueado`, 'success');
+                        
+                        close();
+                        UI.renderContactsList(document.getElementById('main-content'));
+                    };
+                }
+
+                // Favorite Button Logic (Modal)
+                const btnFav = document.getElementById('btn-fav-contact');
+                if(btnFav) {
+                    btnFav.onclick = async () => {
+                         const updated = { ...contact, isFavorite: !contact.isFavorite };
+                         await ContactService.update(updated);
+                         
+                         // Update state
+                         const cIndex = State.contacts.findIndex(c => c.id === contact.id);
+                         if(cIndex !== -1) State.contacts[cIndex] = updated;
+
+                         if (updated.isFavorite) NotificationService.show(`Añadido a favoritos`, 'success');
+                         
+                         // Re-render modal button state instantly
+                         UI.openModal(updated);
+                         // Also refresh list background
+                         UI.renderContactsList(document.getElementById('main-content'));
+                    }
+                }
+            },
+
+            render: () => {
+                UI.root.innerHTML = '';
+                
+                if (!State.user) {
+                    UI.renderLogin();
+                } else {
+                    const layout = document.createElement('div');
+                    layout.className = 'flex flex-col md:flex-row min-h-screen';
+                    layout.innerHTML = UI.Components.Sidebar(State.user);
+                    
+                    const main = document.createElement('main');
+                    main.className = 'flex-1 p-4 md:p-8 overflow-y-auto h-screen transition-colors duration-200';
+                    main.id = 'main-content';
+                    
+                    layout.appendChild(main);
+                    UI.root.appendChild(layout);
+
+                    if (State.currentView === 'CONTACTS_LIST') UI.renderContactsList(main);
+                    if (State.currentView === 'FORM_CONTACT') UI.renderContactForm(main);
+
+                    UI.updateIcons();
+                    UI.attachSidebarEvents();
+                    
+                    // Birthday Check on render if contacts exist
+                    BirthdayService.check(State.contacts);
+                }
+            },
+
+            renderLogin: () => {
+                UI.root.innerHTML = `
+                <div class="min-h-screen flex items-center justify-center px-4 w-full fade-in transition-colors duration-200">
+                    <div class="max-w-md w-full bg-white dark:bg-slate-800 rounded-xl shadow-lg overflow-hidden border border-slate-200 dark:border-slate-700">
+                        <div class="bg-pink-600 px-8 py-6 text-center relative">
+                            <button id="theme-toggle-login" class="absolute top-4 right-4 text-white/80 hover:text-white transition">
+                                <i data-lucide="${ThemeService.isDark() ? 'sun' : 'moon'}" class="w-5 h-5"></i>
+                            </button>
+                            <div class="mx-auto bg-white/20 w-16 h-16 rounded-full flex items-center justify-center mb-4 backdrop-blur-sm">
+                                <i data-lucide="book-heart" class="w-8 h-8 text-white"></i>
+                            </div>
+                            <h1 class="text-2xl font-bold text-white">ConBook</h1>
+                            <p class="text-pink-100 mt-1">Tu Agenda Personal</p>
+                        </div>
+                        <form id="login-form" class="p-8">
+                             <div class="mb-6 bg-pink-50 dark:bg-pink-900/20 text-pink-800 dark:text-pink-300 text-sm p-3 rounded border border-pink-100 dark:border-pink-800">
+                                <strong>Usuario:</strong> Yulelkis@Castillo.com<br>
+                                <strong>Clave:</strong> 123456
+                            </div>
+                            <div class="mb-4">
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Email</label>
+                                <input type="email" id="email" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white" value="Yulelkis@Castillo.com">
+                            </div>
+                            <div class="mb-6">
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Contraseña</label>
+                                <input type="password" id="password" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white" value="123456">
+                            </div>
+                            <button type="submit" class="w-full bg-pink-600 text-white py-2 rounded-lg font-medium hover:bg-pink-700 transition-colors flex justify-center items-center gap-2">
+                                <span id="btn-text">Entrar a ConBook</span>
+                            </button>
+                            <p id="login-error" class="text-red-500 text-sm mt-3 text-center hidden"></p>
+                        </form>
+                    </div>
+                </div>`;
+                UI.updateIcons();
+                
+                document.getElementById('theme-toggle-login').onclick = (e) => {
+                    e.preventDefault();
+                    ThemeService.toggle();
+                    UI.renderLogin(); // Re-render to update icon
+                };
+
+                document.getElementById('login-form').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const btn = e.target.querySelector('button');
+                    const err = document.getElementById('login-error');
+                    
+                    btn.disabled = true;
+                    btn.classList.add('opacity-75');
+                    err.classList.add('hidden');
+                    
+                    try {
+                        const email = document.getElementById('email').value;
+                        const pass = document.getElementById('password').value;
+                        State.user = await AuthService.login(email, pass);
+                        State.currentView = 'CONTACTS_LIST';
+                        UI.render();
+                    } catch (error) {
+                        err.textContent = error.message;
+                        err.classList.remove('hidden');
+                        btn.disabled = false;
+                        btn.classList.remove('opacity-75');
+                    }
+                });
+            },
+
+            renderContactsList: async (container) => {
+                // Ensure State contacts are up to date
+                const contactsRaw = await ContactService.getAll();
+                
+                // CRITICAL FIX: Ensure container is still in DOM before proceeding
+                // This prevents "Cannot set properties of null" error when switching views quickly
+                if (!document.body.contains(container)) return;
+
+                State.contacts = contactsRaw;
+
+                const filteredContacts = State.contacts.filter(c => {
+                    if (State.filter === 'BLOCKED') return c.isBlocked;
+                    if (c.isBlocked) return false; // Hide blocked in other views
+
+                    if (State.filter === 'FAMILY') return c.category === 'FAMILY';
+                    if (State.filter === 'WORK') return c.category === 'WORK';
+                    if (State.filter === 'FRIENDS') return c.category === 'FRIENDS';
+                    if (State.filter === 'OTHER') return !['FAMILY', 'WORK', 'FRIENDS'].includes(c.category) || c.category === 'OTHER';
+                    if (State.filter === 'FAVORITES') return c.isFavorite;
+                    
+                    return true; // ALL
+                });
+                
+                let title = 'Mis Contactos';
+                let subtitle = 'Gestiona familia, amigos y trabajo';
+                if(State.filter === 'BLOCKED') { title = 'Bloqueados'; subtitle = 'Lista negra de usuarios'; }
+                if(State.filter === 'FAMILY') { title = 'Familia'; subtitle = 'Tus seres queridos'; }
+                if(State.filter === 'WORK') { title = 'Trabajo'; subtitle = 'Colegas y negocios'; }
+                if(State.filter === 'FRIENDS') { title = 'Amigos'; subtitle = 'Amistades y conocidos'; }
+                if(State.filter === 'OTHER') { title = 'Otros'; subtitle = 'Contactos sin categoría'; }
+                if(State.filter === 'FAVORITES') { title = 'Favoritos'; subtitle = 'Tus contactos VIP'; }
+
+                container.innerHTML = `
+                    <div class="max-w-6xl mx-auto fade-in">
+                        <div class="flex flex-col md:flex-row justify-between items-start md:items-end mb-6 gap-4">
+                            <div>
+                                <h2 class="text-2xl font-bold text-slate-800 dark:text-white">${title}</h2>
+                                <p class="text-slate-500 dark:text-slate-400 text-sm">${subtitle}</p>
+                            </div>
+                            
+                            <div class="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+                                <!-- Search Bar -->
+                                <div class="relative w-full sm:w-64">
+                                    <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"></i>
+                                    <input type="text" id="search-input" placeholder="Buscar contacto..." class="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-sm focus:ring-2 focus:ring-pink-500 outline-none transition shadow-sm">
+                                </div>
+
+                                <div class="flex gap-2 self-end sm:self-auto">
+                                    <div class="bg-white dark:bg-slate-800 border dark:border-slate-700 rounded-lg p-1 flex shadow-sm">
+                                        <button id="view-grid" class="p-2 rounded ${State.viewMode === 'GRID' ? 'bg-pink-100 text-pink-600 dark:bg-pink-900 dark:text-pink-300' : 'text-slate-400 hover:text-slate-600'} transition" title="Vista Tarjetas">
+                                            <i data-lucide="layout-grid" class="w-4 h-4"></i>
+                                        </button>
+                                        <button id="view-list" class="p-2 rounded ${State.viewMode === 'LIST' ? 'bg-pink-100 text-pink-600 dark:bg-pink-900 dark:text-pink-300' : 'text-slate-400 hover:text-slate-600'} transition" title="Vista Lista">
+                                            <i data-lucide="list" class="w-4 h-4"></i>
+                                        </button>
+                                    </div>
+                                    <button id="btn-add" class="bg-pink-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-pink-700 transition shadow-lg shadow-pink-200 dark:shadow-none whitespace-nowrap">
+                                        <i data-lucide="plus" class="w-4 h-4"></i> <span class="hidden sm:inline">Nuevo</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        ${filteredContacts.length === 0 ? `
+                            <div class="text-center py-20 bg-white dark:bg-slate-800 rounded-xl border border-dashed dark:border-slate-700">
+                                <p class="text-slate-500 dark:text-slate-400">
+                                    ${State.filter === 'BLOCKED' ? 'No hay contactos bloqueados.' : 'No se encontraron contactos en esta sección.'}
+                                </p>
+                            </div>
+                        ` : `
+                            <div id="contacts-container" class="${State.viewMode === 'GRID' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6' : 'bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden'}">
+                                ${State.viewMode === 'GRID' ? 
+                                    filteredContacts.map(c => UI.Components.ContactCard(c)).join('') : 
+                                    filteredContacts.map(c => UI.Components.ContactRow(c)).join('')
+                                }
+                            </div>
+                            <div id="no-results" class="hidden text-center py-10">
+                                <p class="text-slate-500 dark:text-slate-400">No se encontraron contactos con ese nombre.</p>
+                            </div>
+                        `}
+                    </div>
+                `;
+                UI.updateIcons();
+
+                // View Toggle Handlers
+                document.getElementById('view-grid').onclick = () => {
+                    State.viewMode = 'GRID';
+                    localStorage.setItem('cb_view_mode', 'GRID');
+                    UI.renderContactsList(container);
+                };
+                document.getElementById('view-list').onclick = () => {
+                    State.viewMode = 'LIST';
+                    localStorage.setItem('cb_view_mode', 'LIST');
+                    UI.renderContactsList(container);
+                };
+
+                // Search Handler
+                const searchInput = document.getElementById('search-input');
+                if (searchInput) {
+                    searchInput.addEventListener('input', (e) => {
+                        const term = e.target.value.toLowerCase();
+                        const cards = container.querySelectorAll('[data-id]');
+                        let visibleCount = 0;
+                        
+                        cards.forEach(card => {
+                            const id = card.dataset.id;
+                            const contact = State.contacts.find(c => c.id === id);
+                            if (!contact) return;
+                            
+                            // Combine fields for search
+                            const text = `${contact.firstName} ${contact.lastName || ''} ${contact.email || ''} ${contact.phone || ''} ${contact.company || ''} ${contact.jobTitle || ''}`.toLowerCase();
+                            
+                            if (text.includes(term)) {
+                                card.classList.remove('hidden');
+                                visibleCount++;
+                            } else {
+                                card.classList.add('hidden');
+                            }
+                        });
+
+                        // Show no results message if needed
+                        const noResults = document.getElementById('no-results');
+                        if (noResults) {
+                            if (visibleCount === 0 && cards.length > 0) noResults.classList.remove('hidden');
+                            else noResults.classList.add('hidden');
+                        }
+                    });
+                }
+
+                document.getElementById('btn-add').addEventListener('click', () => {
+                    State.editingContact = null; // Modo crear
+                    State.currentView = 'FORM_CONTACT';
+                    UI.render();
+                });
+
+                // Event Listener Delegation (Handles both Grid and List)
+                const delegationHandler = async (e) => {
+                    const card = e.target.closest('[data-id]');
+                    if (!card) return;
+                    
+                    const id = card.dataset.id;
+
+                    // Quick Unblock Button
+                    if (e.target.closest('.btn-quick-unblock')) {
+                        e.stopPropagation();
+                        const updated = await ContactService.toggleBlock(id);
+                        // Update state
+                        const cIndex = State.contacts.findIndex(c => c.id === id);
+                        if(cIndex !== -1) State.contacts[cIndex] = updated;
+                        
+                        NotificationService.show(`${updated.firstName} desbloqueado`, 'success');
+                        UI.renderContactsList(container);
+                        return;
+                    }
+                    
+                    // Si clic en botón borrar
+                    if (e.target.closest('.btn-delete')) {
+                        e.stopPropagation();
+                        if(confirm('¿Eliminar contacto permanentemente?')) {
+                            ContactService.delete(id).then(() => UI.renderContactsList(container));
+                        }
+                        return;
+                    }
+
+                    // Si clic en botón editar
+                    if (e.target.closest('.btn-edit')) {
+                        e.stopPropagation();
+                        const contact = State.contacts.find(c => c.id === id);
+                        State.editingContact = contact;
+                        State.currentView = 'FORM_CONTACT';
+                        UI.render();
+                        return;
+                    }
+
+                    // Clic normal -> Abrir modal
+                    const contact = State.contacts.find(c => c.id === id);
+                    if(contact) UI.openModal(contact);
+                };
+
+                // Add listener to container (captures both list and grid clicks)
+                container.addEventListener('click', delegationHandler);
+            },
+
+            renderContactForm: (container) => {
+                const isEdit = !!State.editingContact;
+                const data = State.editingContact || {};
+
+                container.innerHTML = `
+                    <div class="max-w-4xl mx-auto fade-in">
+                        <div class="flex items-center gap-4 mb-8">
+                            <button id="btn-back" class="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition text-slate-700 dark:text-slate-200"><i data-lucide="arrow-left" class="w-5 h-5"></i></button>
+                            <h2 class="text-2xl font-bold text-slate-800 dark:text-white">${isEdit ? 'Editar Contacto' : 'Nuevo Contacto'}</h2>
+                        </div>
+
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                            <!-- Image Section -->
+                            <div class="lg:col-span-1 space-y-6">
+                                <!-- Photo Upload -->
+                                <div class="bg-white dark:bg-slate-800 rounded-xl p-6 text-center shadow-sm border border-slate-200 dark:border-slate-700">
+                                    <div class="w-32 h-32 mx-auto bg-slate-100 dark:bg-slate-700 rounded-full mb-4 flex items-center justify-center overflow-hidden border-2 border-slate-200 dark:border-slate-600 relative group">
+                                        <img id="preview-img" src="${data.photo || ''}" class="${data.photo ? '' : 'hidden'} w-full h-full object-cover">
+                                        <i data-lucide="camera" class="${data.photo ? 'hidden' : ''} w-8 h-8 text-slate-400"></i>
+                                    </div>
+                                    <input type="file" id="file-upload" accept="image/*" class="hidden">
+                                    <button onclick="document.getElementById('file-upload').click()" class="text-sm text-pink-600 dark:text-pink-400 font-medium hover:underline">
+                                        Subir Foto
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Form Section -->
+                            <div class="lg:col-span-2">
+                                <form id="contact-form" class="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 space-y-6">
+                                    <input type="hidden" name="photo" id="photo-input" value="${data.photo || ''}">
+                                    
+                                    <!-- Basic Info -->
+                                    <div class="space-y-4">
+                                        <div class="flex justify-between items-center border-b dark:border-slate-700 pb-2">
+                                            <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wider">Datos Básicos</h3>
+                                            <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 p-1 rounded">
+                                                <input type="checkbox" name="isFavorite" class="w-4 h-4 text-yellow-500 rounded focus:ring-yellow-400" ${data.isFavorite ? 'checked' : ''}>
+                                                <span class="text-slate-700 dark:text-slate-300 font-medium flex items-center gap-1"><i data-lucide="star" class="w-3 h-3 text-yellow-500 fill-yellow-500"></i> Favorito</span>
+                                            </label>
+                                        </div>
+
+                                        <div class="mb-4">
+                                            <label class="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">Categoría</label>
+                                            <select name="category" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                                                <option value="OTHER" ${(!data.category || data.category === 'OTHER') ? 'selected' : ''}>Ninguno / Otro</option>
+                                                <option value="FAMILY" ${data.category === 'FAMILY' ? 'selected' : ''}>Familiar</option>
+                                                <option value="FRIENDS" ${data.category === 'FRIENDS' ? 'selected' : ''}>Amigo</option>
+                                                <option value="WORK" ${data.category === 'WORK' ? 'selected' : ''}>Trabajo</option>
+                                            </select>
+                                        </div>
+
+                                        <div class="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Nombre</label>
+                                                <input name="firstName" value="${data.firstName || ''}" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white" required>
+                                            </div>
+                                            <div>
+                                                <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Apellido</label>
+                                                <input name="lastName" value="${data.lastName || ''}" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Email</label>
+                                            <input name="email" value="${data.email || ''}" type="email" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                                        </div>
+                                        <div class="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Teléfono</label>
+                                                <input name="phone" value="${data.phone || ''}" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                                            </div>
+                                            <div>
+                                                <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Cumpleaños</label>
+                                                <input name="birthday" value="${data.birthday || ''}" type="date" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Personal Info -->
+                                    <div class="space-y-4">
+                                        <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wider border-b dark:border-slate-700 pb-2">Detalles Personales</h3>
+                                        <div>
+                                            <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Comida Favorita</label>
+                                            <input name="favoriteFood" value="${data.favoriteFood || ''}" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white" placeholder="Ej: Sancocho, Mangú...">
+                                        </div>
+                                        <div class="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Hijos</label>
+                                                <input name="children" value="${data.children || ''}" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white" placeholder="Nombres...">
+                                            </div>
+                                            <div>
+                                                <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Mascotas</label>
+                                                <input name="pets" value="${data.pets || ''}" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white" placeholder="Perro (Firulais)...">
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Work Info -->
+                                    <div class="space-y-4">
+                                        <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wider border-b dark:border-slate-700 pb-2">Trabajo</h3>
+                                        <div class="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Empresa</label>
+                                                <input name="company" value="${data.company || ''}" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                                            </div>
+                                            <div>
+                                                <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Cargo</label>
+                                                <input name="jobTitle" value="${data.jobTitle || ''}" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">Notas Adicionales</label>
+                                        <textarea name="notes" class="w-full px-3 py-2 border dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white dark:bg-slate-700 text-slate-900 dark:text-white" rows="2">${data.notes || ''}</textarea>
+                                    </div>
+                                    
+                                    <div class="pt-4 border-t dark:border-slate-700 flex justify-end gap-3">
+                                        <button type="button" id="btn-cancel" class="px-6 py-2 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition">Cancelar</button>
+                                        <button type="submit" class="bg-pink-600 text-white px-6 py-2 rounded-lg flex items-center gap-2 hover:bg-pink-700 transition shadow-md shadow-pink-200 dark:shadow-none">
+                                            <i data-lucide="save" class="w-4 h-4"></i> ${isEdit ? 'Actualizar' : 'Guardar'}
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                UI.updateIcons();
+
+                // Handlers
+                const fileInput = document.getElementById('file-upload');
+                fileInput.addEventListener('change', async (e) => {
+                    if(e.target.files && e.target.files[0]) {
+                        try {
+                            const base64 = await compressImage(e.target.files[0]);
+                            document.getElementById('preview-img').src = base64;
+                            document.getElementById('preview-img').classList.remove('hidden');
+                            document.getElementById('photo-input').value = base64;
+                        } catch (err) {
+                            alert("Error al procesar la imagen");
+                        }
+                    }
+                });
+
+                document.getElementById('btn-back').onclick = () => {
+                    State.currentView = 'CONTACTS_LIST';
+                    UI.render();
+                };
+                
+                document.getElementById('btn-cancel').onclick = () => {
+                    State.currentView = 'CONTACTS_LIST';
+                    UI.render();
+                };
+
+                document.getElementById('contact-form').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const formData = new FormData(e.target);
+                    const formObj = Object.fromEntries(formData.entries());
+                    
+                    // Manually handle checkbox
+                    formObj.isFavorite = e.target.querySelector('input[name="isFavorite"]').checked;
+
+                    if (isEdit) {
+                        await ContactService.update({ ...State.editingContact, ...formObj });
+                        NotificationService.show('Contacto actualizado', 'success');
+                    } else {
+                        await ContactService.create(formObj);
+                        NotificationService.show('Contacto creado', 'success');
+                    }
+                    State.currentView = 'CONTACTS_LIST';
+                    UI.render();
+                };
+            },
+
+            attachSidebarEvents: () => {
+                const addClick = (id, fn) => {
+                    const el = document.getElementById(id);
+                    if(el) el.onclick = fn;
+                };
+
+                addClick('btn-logout', () => {
+                    AuthService.logout();
+                    State.user = null;
+                    State.currentView = 'LOGIN';
+                    UI.render();
+                });
+                
+                // Toggle Filter: All Contacts
+                addClick('nav-contacts', () => {
+                    State.currentView = 'CONTACTS_LIST';
+                    State.filter = 'ALL';
+                    UI.render();
+                });
+
+                addClick('nav-favorites', () => {
+                    State.currentView = 'CONTACTS_LIST';
+                    State.filter = 'FAVORITES';
+                    UI.render();
+                });
+
+                // NEW FILTERS
+                addClick('nav-family', () => {
+                    State.currentView = 'CONTACTS_LIST';
+                    State.filter = 'FAMILY';
+                    UI.render();
+                });
+                addClick('nav-work', () => {
+                    State.currentView = 'CONTACTS_LIST';
+                    State.filter = 'WORK';
+                    UI.render();
+                });
+                addClick('nav-friends', () => {
+                    State.currentView = 'CONTACTS_LIST';
+                    State.filter = 'FRIENDS';
+                    UI.render();
+                });
+                 addClick('nav-other', () => {
+                    State.currentView = 'CONTACTS_LIST';
+                    State.filter = 'OTHER';
+                    UI.render();
+                });
+
+                // Toggle Filter: Blocked Contacts
+                addClick('nav-blocked', () => {
+                    State.currentView = 'CONTACTS_LIST';
+                    State.filter = 'BLOCKED';
+                    UI.render();
+                });
+
+                // Theme Toggle Logic
+                addClick('btn-theme-toggle', () => {
+                    ThemeService.toggle();
+                    UI.render(); // Re-render to update UI immediately
+                });
+            },
+
+            Components: {
+                Sidebar: (user) => `
+                    <aside class="w-full md:w-64 bg-slate-900 text-white flex-shrink-0 flex flex-col shadow-2xl z-20">
+                        <div class="p-6 flex items-center justify-between border-b border-slate-800">
+                            <div class="flex items-center gap-2">
+                                <i data-lucide="book-heart" class="text-pink-500 w-6 h-6"></i>
+                                <span class="font-bold text-xl tracking-tight">ConBook</span>
+                            </div>
+                        </div>
+                        <nav class="flex-1 p-4 space-y-1">
+                            <button id="nav-contacts" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg ${State.filter === 'ALL' ? 'bg-pink-600/20 text-pink-400 border border-pink-600/10' : 'hover:bg-slate-800 text-slate-400'} font-medium text-left transition-colors">
+                                <i data-lucide="layout-grid" class="w-5 h-5"></i> Mis Contactos
+                            </button>
+                            
+                            <button id="nav-favorites" class="w-full flex items-center gap-3 px-4 py-2 rounded-lg ${State.filter === 'FAVORITES' ? 'text-yellow-400 bg-slate-800' : 'text-slate-500 hover:text-slate-300'} text-sm text-left transition-colors">
+                                <i data-lucide="star" class="w-4 h-4"></i> Favoritos
+                            </button>
+
+                            <!-- Subcategories -->
+                            <div class="pl-4 mt-1 space-y-1">
+                                <button id="nav-family" class="w-full flex items-center gap-3 px-4 py-2 rounded-lg ${State.filter === 'FAMILY' ? 'text-white bg-slate-800' : 'text-slate-500 hover:text-slate-300'} text-sm text-left transition-colors">
+                                    <i data-lucide="heart" class="w-4 h-4 text-indigo-400"></i> Familiar
+                                </button>
+                                <button id="nav-friends" class="w-full flex items-center gap-3 px-4 py-2 rounded-lg ${State.filter === 'FRIENDS' ? 'text-white bg-slate-800' : 'text-slate-500 hover:text-slate-300'} text-sm text-left transition-colors">
+                                    <i data-lucide="users" class="w-4 h-4 text-emerald-400"></i> Amigos
+                                </button>
+                                <button id="nav-work" class="w-full flex items-center gap-3 px-4 py-2 rounded-lg ${State.filter === 'WORK' ? 'text-white bg-slate-800' : 'text-slate-500 hover:text-slate-300'} text-sm text-left transition-colors">
+                                    <i data-lucide="briefcase" class="w-4 h-4 text-blue-400"></i> Trabajo
+                                </button>
+                                <button id="nav-other" class="w-full flex items-center gap-3 px-4 py-2 rounded-lg ${State.filter === 'OTHER' ? 'text-white bg-slate-800' : 'text-slate-500 hover:text-slate-300'} text-sm text-left transition-colors">
+                                    <i data-lucide="box" class="w-4 h-4 text-slate-400"></i> Otros
+                                </button>
+                            </div>
+
+                            <button id="nav-blocked" class="w-full flex items-center gap-3 px-4 py-3 mt-4 rounded-lg ${State.filter === 'BLOCKED' ? 'bg-red-600/20 text-red-400 border border-red-600/10' : 'hover:bg-slate-800 text-slate-400'} font-medium text-left transition-colors">
+                                <i data-lucide="ban" class="w-5 h-5"></i> Bloqueados
+                            </button>
+                        </nav>
+                        <div class="p-4 border-t border-slate-800 space-y-4">
+                            <!-- Theme Toggle in Sidebar -->
+                            <button id="btn-theme-toggle" class="w-full flex items-center justify-between px-4 py-2 rounded-lg bg-slate-800 text-slate-300 hover:text-white transition">
+                                <span class="text-sm">Modo ${ThemeService.isDark() ? 'Oscuro' : 'Claro'}</span>
+                                <i data-lucide="${ThemeService.isDark() ? 'moon' : 'sun'}" class="w-4 h-4"></i>
+                            </button>
+
+                            <div class="flex items-center gap-3 px-2">
+                                <img src="${user.avatar}" class="w-9 h-9 rounded-full bg-slate-700 border-2 border-slate-600">
+                                <div class="overflow-hidden">
+                                    <p class="text-sm font-medium truncate text-slate-200">${user.name}</p>
+                                    <p class="text-xs text-slate-500 truncate">${user.email}</p>
+                                </div>
+                            </div>
+                            <button id="btn-logout" class="w-full flex items-center gap-2 px-4 py-2 rounded-lg text-sm text-red-400 hover:bg-slate-800 transition-colors">
+                                <i data-lucide="log-out" class="w-4 h-4"></i> Cerrar Sesión
+                            </button>
+                        </div>
+                    </aside>
+                `,
+                ContactRow: (c) => {
+                    let badge = '';
+                    if(c.category === 'FAMILY') badge = '<span class="bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase">Fam</span>';
+                    else if(c.category === 'FRIENDS') badge = '<span class="bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase">Amigo</span>';
+                    else if(c.category === 'WORK') badge = '<span class="bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase">Job</span>';
+
+                    return `
+                    <div data-id="${c.id}" class="flex items-center p-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700/50 last:border-0 cursor-pointer transition group">
+                        <!-- Photo -->
+                        <div class="flex-shrink-0 mr-4 relative">
+                            ${c.photo ? 
+                                `<img src="${c.photo}" class="w-10 h-10 rounded-full object-cover">` : 
+                                `<div class="w-10 h-10 rounded-full bg-pink-100 dark:bg-pink-900 text-pink-600 dark:text-pink-300 flex items-center justify-center font-bold text-sm">
+                                    ${c.firstName[0]}${c.lastName ? c.lastName[0] : ''}
+                                </div>`
+                            }
+                            ${c.isFavorite ? '<div class="absolute -top-1 -right-1 text-yellow-500 bg-white dark:bg-slate-800 rounded-full p-0.5 shadow-sm"><i data-lucide="star" class="w-3 h-3 fill-yellow-500"></i></div>' : ''}
+                        </div>
+                        
+                        <!-- Name & Title -->
+                        <div class="flex-1 min-w-0 mr-4">
+                            <div class="flex items-center gap-2">
+                                <h4 class="text-sm font-semibold text-slate-800 dark:text-white truncate">${c.firstName} ${c.lastName || ''}</h4>
+                                ${c.isBlocked ? `<button class="btn-quick-unblock text-red-500 hover:text-red-700 p-0.5 rounded" title="Desbloquear"><i data-lucide="lock" class="w-3 h-3"></i></button>` : ''}
+                                ${badge}
+                            </div>
+                            <p class="text-xs text-slate-500 dark:text-slate-400 truncate">${c.jobTitle || 'Sin cargo'}</p>
+                        </div>
+
+                        <!-- Phone -->
+                        <div class="hidden sm:block text-sm text-slate-600 dark:text-slate-300 mr-4">
+                            ${c.phone || '-'}
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button class="btn-edit p-1.5 text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900 rounded transition">
+                                <i data-lucide="pencil" class="w-4 h-4"></i>
+                            </button>
+                            <button class="btn-delete p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900 rounded transition">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+                `},
+                ContactCard: (c) => {
+                    let badge = '';
+                    if(c.category === 'FAMILY') badge = '<span class="bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide">Fam</span>';
+                    else if(c.category === 'FRIENDS') badge = '<span class="bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide">Amigo</span>';
+                    else if(c.category === 'WORK') badge = '<span class="bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide">Job</span>';
+
+                    return `
+                    <div data-id="${c.id}" class="contact-card bg-white dark:bg-slate-800 rounded-xl p-5 border ${c.isBlocked ? 'border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-900/10' : 'border-slate-200 dark:border-slate-700'} hover:shadow-lg hover:border-pink-200 dark:hover:border-pink-700 transition-all cursor-pointer relative group">
+                        
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="relative">
+                                    ${c.photo ? 
+                                        `<img src="${c.photo}" class="w-12 h-12 rounded-full object-cover border border-slate-100 dark:border-slate-600 ${c.isBlocked ? 'grayscale' : ''}">` : 
+                                        `<div class="w-12 h-12 rounded-full bg-pink-100 dark:bg-pink-900 text-pink-600 dark:text-pink-300 flex items-center justify-center font-bold text-lg">
+                                            ${c.firstName[0]}${c.lastName ? c.lastName[0] : ''}
+                                        </div>`
+                                    }
+                                    ${c.isFavorite ? '<div class="absolute -top-1 -right-1 text-yellow-500 bg-white dark:bg-slate-800 rounded-full p-0.5 shadow-sm"><i data-lucide="star" class="w-4 h-4 fill-yellow-500"></i></div>' : ''}
+                                </div>
+                                <div>
+                                    <div class="flex items-center gap-2">
+                                        <h3 class="font-semibold text-slate-800 dark:text-white">${c.firstName} ${c.lastName || ''}</h3>
+                                        ${c.isBlocked ? `<button class="btn-quick-unblock text-red-500 hover:text-red-700 p-0.5 rounded" title="Desbloquear"><i data-lucide="lock" class="w-3 h-3"></i></button>` : ''}
+                                        ${badge}
+                                    </div>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400 truncate max-w-[120px]">${c.jobTitle || 'Sin cargo'}</p>
+                                </div>
+                            </div>
+                            ${!c.isBlocked ? `
+                            <div class="flex gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button class="btn-edit p-1.5 text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900 rounded transition">
+                                    <i data-lucide="pencil" class="w-4 h-4"></i>
+                                </button>
+                                <button class="btn-delete p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900 rounded transition">
+                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                </button>
+                            </div>` : ''}
+                        </div>
+                        <div class="space-y-2 text-sm text-slate-600 dark:text-slate-300">
+                            ${c.birthday ? `<div class="flex gap-2 text-xs text-pink-500"><i data-lucide="cake" class="w-4 h-4"></i> ${c.birthday}</div>` : ''}
+                            <div class="flex gap-2"><i data-lucide="mail" class="w-4 h-4 text-slate-400"></i> ${c.email || 'Sin email'}</div>
+                            ${c.phone ? `<div class="flex gap-2"><i data-lucide="phone" class="w-4 h-4 text-slate-400"></i> ${c.phone}</div>` : ''}
+                        </div>
+                    </div>
+                `},
+                ContactModal: (c) => {
+                    let badge = '';
+                    if(c.category === 'FAMILY') badge = '<span class="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300 text-sm px-2 py-1 rounded-full font-bold">FAMILIAR</span>';
+                    else if(c.category === 'FRIENDS') badge = '<span class="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300 text-sm px-2 py-1 rounded-full font-bold">AMIGO</span>';
+                    else if(c.category === 'WORK') badge = '<span class="bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300 text-sm px-2 py-1 rounded-full font-bold">TRABAJO</span>';
+                    else if(c.category === 'OTHER') badge = '<span class="bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300 text-sm px-2 py-1 rounded-full font-bold">OTRO</span>';
+
+                    return `
+                    <div id="modal-backdrop" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm fade-in p-4">
+                        <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden relative animate-bounce-in max-h-[90vh] overflow-y-auto border border-slate-200 dark:border-slate-700">
+                            <!-- Header Gradient - Increased height to fix photo cropping -->
+                            <div class="h-40 bg-gradient-to-r from-pink-500 to-purple-600 relative">
+                                <button id="btn-close-modal" class="absolute top-4 right-4 bg-black/20 text-white hover:bg-black/30 p-2 rounded-full transition z-10">
+                                    <i data-lucide="x" class="w-5 h-5"></i>
+                                </button>
+                            </div>
+                            
+                            <div class="px-8 pb-8">
+                                <!-- Avatar Overlapping - Adjusted margin for better centering -->
+                                <div class="-mt-20 mb-5 flex justify-between items-end relative z-10">
+                                    <div class="w-36 h-36 rounded-full border-4 border-white dark:border-slate-800 bg-white dark:bg-slate-700 shadow-md flex items-center justify-center overflow-hidden">
+                                        ${c.photo ? 
+                                            `<img src="${c.photo}" class="w-full h-full object-cover ${c.isBlocked ? 'grayscale' : ''}">` : 
+                                            `<span class="text-5xl font-bold text-pink-600 dark:text-pink-400">${c.firstName[0]}${c.lastName ? c.lastName[0] : ''}</span>`
+                                        }
+                                    </div>
+                                    
+                                    <!-- Action Buttons -->
+                                    <div class="mb-2 flex gap-2">
+                                        <button id="btn-fav-contact" class="p-2 rounded-full ${c.isFavorite ? 'bg-yellow-100 text-yellow-500 dark:bg-yellow-900 dark:text-yellow-300' : 'bg-slate-100 text-slate-400 hover:text-yellow-500 dark:bg-slate-700 dark:text-slate-400'} transition" title="Favorito">
+                                            <i data-lucide="star" class="w-5 h-5 ${c.isFavorite ? 'fill-yellow-500' : ''}"></i>
+                                        </button>
+                                        <button id="btn-block-contact" class="p-2 rounded-full ${c.isBlocked ? 'bg-red-100 text-red-600 dark:bg-red-900 dark:text-red-300' : 'bg-slate-100 text-slate-500 hover:bg-red-50 hover:text-red-500 dark:bg-slate-700 dark:text-slate-400 dark:hover:bg-red-900/50'} transition" title="${c.isBlocked ? 'Desbloquear' : 'Bloquear'}">
+                                            <i data-lucide="${c.isBlocked ? 'lock-open' : 'ban'}" class="w-5 h-5"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <!-- Main Info -->
+                                <div class="mb-6 border-b dark:border-slate-700 pb-6">
+                                    <div class="flex flex-wrap items-center gap-2 mb-1">
+                                        <h2 class="text-3xl font-bold text-slate-800 dark:text-white">${c.firstName} ${c.lastName || ''}</h2>
+                                        ${badge}
+                                        ${c.isBlocked ? '<span class="bg-red-100 text-red-600 text-xs px-2 py-1 rounded font-bold dark:bg-red-900 dark:text-red-300">BLOQUEADO</span>' : ''}
+                                    </div>
+                                    <p class="text-lg text-slate-500 dark:text-slate-400">${c.jobTitle || 'Sin cargo definido'}</p>
+                                    ${c.company ? `<p class="text-slate-400 dark:text-slate-500 font-medium flex items-center gap-1 mt-1"><i data-lucide="building-2" class="w-4 h-4"></i> ${c.company}</p>` : ''}
+                                </div>
+                                
+                                <!-- Details Grid -->
+                                <div class="space-y-5">
+                                    <!-- Contact Info -->
+                                    <div class="grid grid-cols-2 gap-4">
+                                         <div class="p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg">
+                                            <p class="text-xs text-slate-400 uppercase font-bold mb-1">Email</p>
+                                            <p class="text-sm text-blue-600 dark:text-blue-400 truncate">${c.email || 'No registrado'}</p>
+                                         </div>
+                                         <div class="p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg">
+                                            <p class="text-xs text-slate-400 uppercase font-bold mb-1">Teléfono</p>
+                                            <p class="text-sm text-slate-700 dark:text-slate-300">${c.phone || '-'}</p>
+                                         </div>
+                                    </div>
+
+                                    <!-- Personal Data -->
+                                    <h3 class="font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                                        <i data-lucide="heart-handshake" class="w-4 h-4 text-pink-500"></i> Personal
+                                    </h3>
+                                    <div class="grid grid-cols-2 gap-y-4 gap-x-2 text-sm text-slate-700 dark:text-slate-300">
+                                        ${c.birthday ? `
+                                        <div>
+                                            <span class="text-slate-400 block text-xs">Cumpleaños</span>
+                                            <div class="flex items-center gap-2 mt-1">
+                                                <i data-lucide="cake" class="w-4 h-4 text-pink-400"></i>
+                                                <span>${new Date(c.birthday).toLocaleDateString(undefined, {month:'long', day:'numeric'})}</span>
+                                            </div>
+                                        </div>` : ''}
+
+                                        ${c.favoriteFood ? `
+                                        <div>
+                                            <span class="text-slate-400 block text-xs">Comida Favorita</span>
+                                            <div class="flex items-center gap-2 mt-1">
+                                                <i data-lucide="utensils" class="w-4 h-4 text-orange-400"></i>
+                                                <span>${c.favoriteFood}</span>
+                                            </div>
+                                        </div>` : ''}
+
+                                        ${c.children ? `
+                                        <div class="col-span-2">
+                                            <span class="text-slate-400 block text-xs">Hijos</span>
+                                            <div class="flex items-center gap-2 mt-1">
+                                                <i data-lucide="baby" class="w-4 h-4 text-blue-400"></i>
+                                                <span>${c.children}</span>
+                                            </div>
+                                        </div>` : ''}
+
+                                        ${c.pets ? `
+                                        <div class="col-span-2">
+                                            <span class="text-slate-400 block text-xs">Mascotas</span>
+                                            <div class="flex items-center gap-2 mt-1">
+                                                <i data-lucide="dog" class="w-4 h-4 text-amber-600"></i>
+                                                <span>${c.pets}</span>
+                                            </div>
+                                        </div>` : ''}
+                                    </div>
+                                    
+                                    ${c.notes ? `
+                                    <div class="mt-4 pt-4 border-t dark:border-slate-700">
+                                        <p class="text-xs text-slate-400 uppercase font-bold tracking-wider mb-2">Notas</p>
+                                        <div class="bg-yellow-50 dark:bg-yellow-900/20 p-3 rounded-lg border border-yellow-100 dark:border-yellow-900 text-slate-700 dark:text-slate-300 text-sm italic">
+                                            "${c.notes}"
+                                        </div>
+                                    </div>` : ''}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `}
+            }
+        };
+
+        const init = async () => {
+            try {
+                ThemeService.init();
+                ContactService.init();
+                const storedUser = AuthService.getSession();
+                if (storedUser) {
+                    State.user = storedUser;
+                    State.currentView = 'CONTACTS_LIST';
+                }
+                UI.render();
+                ready();
+            } catch (error) {
+                console.error("Fatal init error:", error);
+                throw error;
+            }
+        };
+
+        init();
+    </script>
+
+    <!-- WATCHDOG PARA DETECTAR FALLOS DE CARGA -->
+    <script>
+        setTimeout(() => {
+            if (!window.APP_LOADED) {
+                document.getElementById('loading-hint').classList.remove('hidden');
+            }
+        }, 2500);
+    </script>
+</body>
+</html>
