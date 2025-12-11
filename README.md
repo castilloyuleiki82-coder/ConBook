@@ -4,6 +4,8 @@
 
 # Run and deploy your AI Studio app
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/7e8ef70df1754e1898493eb9fcbfa335)](https://app.codacy.com/gh/castilloyuleiki82-coder/ConBook?utm_source=github.com&utm_medium=referral&utm_content=castilloyuleiki82-coder/ConBook&utm_campaign=Badge_Grade)
+
 This contains everything you need to run your app locally.
 
 View your app in AI Studio: https://ai.studio/apps/drive/1gQdZSYUInJKEu5sAadc2LGtgjHeT9v6T
